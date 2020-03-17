@@ -1,0 +1,109 @@
+#!/bin/bash
+
+# Released under GPL3 licence (see https://www.gnu.org/licenses/gpl-3.0.en.html)
+# Use of this software is entirely at users own risk.
+# The author accepts no responsibility or liability whatsoever for use
+# of this software in any way. This software changes the UUID of a fat
+# partition, by directly altering the data on that partition. Although
+# I have built in numerous checks, I am not a computer expert, and this
+# can potentially cause loss of data, filesystem corruption, or
+# corruption of partitions on your device. If you don't know what you
+# are doing, then DO NOT USE this software. You should look through the
+# script (It's not a long script) to understand what it does, and so
+# understand the potential risks. Before using this software you must
+# agree to these terms and conditions.
+
+# ensure correct number of inputs
+if [ $# -ne 2 ]; then
+  echo "Usage: setfatuuid partition newuuid"
+  exit 1
+fi
+
+# make sure user knows the risks
+echo "This script changes data on a partition at a byte level." \
+     "  This is potentially risky and could corrupt or damage the partition and whatever is stored on it." \
+     "  Also changing the UUID could break programs that use it to identify the partition." \
+     "  There are lots of checks to avoid failure, but this script is provided as is, with NO WARANTY." \
+     "  I accept NO LIABILITY whatsoever for any problems, data loss, corruption, or any consequence of your usage of this script." \
+     "  By proceding you accept these conditions.\n" \
+     "Are you sure you want to procede? [Y/N]"
+while true; do
+  read yn
+  if [ "${yn^^}" == "Y" ]; then
+    break
+  elif [ "${yn^^}" == "N" ]; then
+    exit
+  fi
+done
+
+# ensure 1st argument is valid: has to be block device
+if [[ `ls -l $1 2>&1` != b* ]]; then
+  echo "Error: $1 is not a valid block device."
+  exit 2
+fi
+
+# ensure 1st argument is valid: has to be fat partition
+parttype=`lsblk -no FSTYPE $1`
+if [ "$parttype" != "exfat" ] && [ "$parttype" != "vfat" ]; then
+  echo "Error: $1 is a $parttype partition, not a fat partition"
+  exit 3
+fi
+
+# ensure 2nd argument is valid UUID
+if ! [[ "$2" =~ ^[0-9A-Fa-f]{4}\-[0-9A-Fa-f]{4}$ ]]; then
+  echo "Error: $2 is invalid UUID. Has to be an 8 digit hexadecimal number in format XXXX-XXXX"
+  exit 4
+fi
+
+# ensure we're running as root: dd needs root
+if [ "$EUID" -ne 0 ]; then
+  echo "Error: setfatuuid needs to be run as root"
+  exit 5
+fi
+
+# work out where UUID is depending on FAT version
+if [ "$parttype" == "exfat" ]; then
+  UUIDposition=100
+else
+  # vfat offset
+  UUIDposition=67
+fi
+
+# check if input from dd is correct: should be, but we're messing with dd so have to be SURE before writing
+olduuid=`lsblk -no UUID $1`
+uuidfromdd=`dd bs=1 skip=$UUIDposition count=4 if=$1 2>/dev/null | xxd -plain -u | sed -r 's/(..)(..)(..)(..)/\4\3-\2\1/'`
+if [ "${olduuid^^}" != "${uuidfromdd^^}" ]; then
+  echo "Error: UUID location check failure."
+  exit 6
+fi
+
+# ensure not mounted
+mountpoint=`lsblk -no MOUNTPOINT $1`
+if [ -n "$mountpoint" ]; then
+  echo "Error: $1 is mounted."
+  exit 7
+fi
+
+# now doublecheck user is sure
+devlabel=`lsblk -no LABEL $1`
+devsize=`lsblk -no SIZE $1`
+echo "Replace existing UUID (${olduuid^^}) with ${2^^} on $1 (label: \"$devlabel\", size: $devsize, format: $parttype)? [Y/N]"
+while true; do
+  read yn
+  if [ "${yn^^}" == "Y" ]; then
+    break
+  elif [ "${yn^^}" == "N" ]; then
+    exit
+  fi
+done
+
+# now replace UUID
+UUID="$2"
+printf "\x${UUID:7:2}\x${UUID:5:2}\x${UUID:2:2}\x${UUID:0:2}" | dd bs=1 seek=$UUIDposition count=4 conv=notrunc status=none of=$1
+
+# finally check success. Use blkid. will be root so no caching that would return old UUID (like lsblk)
+newuuid=`blkid -o export $1 | grep '^UUID=.*' | sed -n -e 's/^UUID=\(.*\)$/\1/p'`
+if [ "${newuuid^^}" != "${2^^}" ]; then
+  echo "Error: failed to set new UUID. Partition possibly corrupted."
+  exit 8
+fi

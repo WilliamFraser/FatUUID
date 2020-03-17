@@ -1,0 +1,29 @@
+#!/bin/bash
+
+# Released under GPL3 licence (see https://www.gnu.org/licenses/gpl-3.0.en.html)
+# Use of this software is entirely at users own risk.
+# The author accepts no responsibility or liability whatsoever for use
+# of this software in any way. Before using this software you must
+# agree to these terms and conditions.
+
+# ensure correct number of inputs
+if [ $# -ne 1 ]; then
+  echo "Usage: getfatuuid partition"
+  exit 1
+fi
+
+# ensure 1st argument is valid: has to be block device
+if [[ `ls -l $1 2>&1` != b* ]]; then
+  echo "Error: $1 is not a valid block device."
+  exit 2
+fi
+
+# ensure 1st argument is valid: has to be fat partition
+parttype=`lsblk -no FSTYPE $1`
+if [ "$parttype" != "exfat" ] && [ "$parttype" != "vfat" ]; then
+  echo "Error: $1 is a $parttype partition, not a fat partition"
+  exit 3
+fi
+
+# now output partition UUID
+lsblk -no UUID $1
